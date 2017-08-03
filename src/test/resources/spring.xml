@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:context="http://www.springframework.org/schema/context"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans
+           http://www.springframework.org/schema/beans/spring-beans.xsd
+           http://www.springframework.org/schema/context
+           http://www.springframework.org/schema/context/spring-context.xsd">
+
+    <context:annotation-config/>
+    <context:component-scan base-package="com.yaxon.vndp.dcap.dao"/>
+
+    <bean id="configProperties" class="org.springframework.beans.factory.config.PropertiesFactoryBean">
+        <property name="locations">
+            <list>
+                <value>classpath:redis.properties</value>
+            </list>
+        </property>
+    </bean>
+    <bean id="propertyConfigurer" class="org.springframework.beans.factory.config.PreferencesPlaceholderConfigurer">
+        <property name="properties" ref="configProperties" />
+    </bean>
+    <!--Redis连接池相关配置-->
+    <bean id="jedisPoolConfig" class="redis.clients.jedis.JedisPoolConfig">
+        <property name="maxTotal" value="64"></property>  <!--最大连接数, 默认8个-->
+        <property name="maxIdle" value="10"></property>    <!--最大空闲连接数, 默认0-->
+        <property name="maxWaitMillis" value="15000"></property> <!--从连接池中获取连接时的最大等待毫秒数,如果超时就抛异常, 小于零:阻塞不确定的时间,  默认-1-->
+        <property name="minEvictableIdleTimeMillis" value="60000"></property> <!--逐出连接的最小空闲时间 默认1800000毫秒(30分钟)-->
+        <property name="numTestsPerEvictionRun" value="10"></property> <!--每次逐出检查时 逐出的最大数目 如果为负数就是 : 1/abs(n), 默认3-->
+        <property name="timeBetweenEvictionRunsMillis" value="30000"></property><!--//逐出扫描的时间间隔(毫秒) 如果为负数,则不运行逐出线程, 默认-1-->
+    </bean>
+    <!--Redis连接池相关配置结束-->
+
+    <!--redis连接工厂配置-->
+    <bean id="jedisConnectionFactory" class="com.yaxon.vndp.dcap.jedis.JedisConnectionFactoryImp" destroy-method="destroy">
+        <property name="poolConfig" ref="jedisPoolConfig"></property> <!--连接池配置-->
+        <property name="timeout" value="15000"></property>  <!--与redis服务端建立连接的最大等待时间，纯sock建链成时间，单位毫秒-->
+        <property name="usePool" value="true"></property> <!--是否使用连接池-->
+    </bean>
+    <!--redis连接工厂配置结束-->
+
+    <!--redis的HA高可用配置，无需容灾切换的时候可不用配置-->
+    <!--<bean id="redisSentinelConfiguration0" class="org.springframework.data.redis.connection.RedisSentinelConfiguration">-->
+        <!--<property name="master">-->
+            <!--<bean class="org.springframework.data.redis.connection.RedisNode">-->
+                <!--<property name="name" value="${rs0_master_name}"></property>-->
+            <!--</bean>-->
+        <!--</property>-->
+        <!--<property name="sentinels">-->
+            <!--<set>-->
+                <!--<bean class="org.springframework.data.redis.connection.RedisNode">-->
+                    <!--<constructor-arg name="host" value="${rs0.sentinel_1.host}"/>-->
+                    <!--<constructor-arg name="port" value="${rs0.sentinel_1.port}"/>-->
+                <!--</bean>-->
+            <!--</set>-->
+        <!--</property>-->
+    <!--</bean>-->
+    <!--<bean id="redisSentinelConfiguration1" class="org.springframework.data.redis.connection.RedisSentinelConfiguration">-->
+        <!--<property name="master">-->
+            <!--<bean class="org.springframework.data.redis.connection.RedisNode">-->
+                <!--<property name="name" value="${rs1_master_name}"></property>-->
+            <!--</bean>-->
+        <!--</property>-->
+        <!--<property name="sentinels">-->
+            <!--<set>-->
+                <!--<bean class="org.springframework.data.redis.connection.RedisNode">-->
+                    <!--<constructor-arg name="host" value="${rs1.sentinel_1.host}"/>-->
+                    <!--<constructor-arg name="port" value="${rs1.sentinel_1.port}"/>-->
+                <!--</bean>-->
+            <!--</set>-->
+        <!--</property>-->
+    <!--</bean>-->
+    <!--HA高可用配置结束-->
+
+    <bean id="jcf0" parent="jedisConnectionFactory">
+        <property name="hostName" value="${rs0.redis.host}"/>
+        <property name="port" value="${rs0.redis.port}"/>
+        <property name="database" value="${rs0.redis.db}"/>
+        <!--<constructor-arg name="sentinelConfig" ref="redisSentinelConfiguration0"/>&lt;!&ndash;根据是否需要容灾切换而配置&ndash;&gt;-->
+    </bean>
+    <bean id="jcf1" parent="jedisConnectionFactory">
+        <property name="hostName" value="${rs1.redis.host}"/>
+        <property name="port" value="${rs1.redis.port}"/>
+        <property name="database" value="${rs1.redis.db}"/>
+        <!--<constructor-arg name="sentinelConfig" ref="redisSentinelConfiguration1"/>&lt;!&ndash;根据是否需要容灾切换而配置&ndash;&gt;-->
+    </bean>
+
+    <bean id="shardedRedisConnectionFactory" class="com.yaxon.vndp.dcap.connection.ShardedRedisConnectionFactoryBuilder">
+        <property name="redisSources">
+            <map>
+                <entry key-ref="jcf0" value="r0"/>
+                <entry key-ref="jcf1" value="r1"/>
+            </map>
+        </property>
+    </bean>
+
+     <bean id="shardedRedisStringTemplate" class="com.yaxon.vndp.dcap.ShardedRedisTemplate">
+         <property name="shardedRedisConnectionFactory" ref="shardedRedisConnectionFactory"/>
+         <property name="shardStrategyFactory">
+             <bean class="com.yaxon.vndp.dcap.strategy.DefaultShardStrategyFactory">
+                 <property name="shardAccessStrategy">
+                     <bean class="com.yaxon.vndp.dcap.strategy.access.ParallelShardAccessStrategy">
+                         <constructor-arg index="0">
+                             <bean class="org.springframework.scheduling.concurrent.ThreadPoolExecutorFactoryBean">
+                                 <property name="corePoolSize" value="1"/>
+                                 <property name="maxPoolSize" value="5"/>
+                             </bean>
+                         </constructor-arg>
+                     </bean>
+                 </property>
+                 <property name="shardResolutionStrategy">
+                     <bean class="com.yaxon.vndp.dcap.strategy.resolution.xml.XmlShardResolutionStrategy">
+                         <property name="configLocation" value="classpath:redis-shard-rule.xml"/>
+                     </bean>
+                 </property>
+             </bean>
+         </property>
+     </bean>
+    <!--RedisService中反序列频道需要-->
+    <bean id="stringRedisSerializer" class="org.springframework.data.redis.serializer.StringRedisSerializer"/>
+
+    <!---测试用，实际环境不用-->
+    <bean id="jedisTemplate" class="org.springframework.data.redis.core.StringRedisTemplate">
+        <property name="connectionFactory" ref="jcf0"/>
+    </bean>
+
+    <bean id="jedisListenerContainer" class="org.springframework.data.redis.listener.RedisMessageListenerContainer" destroy-method="destroy">
+        <property name="connectionFactory" ref="jcf0"/>
+    </bean>
+    <!---测试用，实际环境不用-->
+
+
+</beans>
